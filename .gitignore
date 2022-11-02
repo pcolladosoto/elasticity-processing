@@ -1,0 +1,18 @@
+# Ignore hidden files except .gitignore
+.*
+!.gitignore
+
+# Ignore Python Virtual environments
+*env/
+
+# Ignore Python's stuff
+__pycache__/
+*.pyc
+
+# Ignore the raw data files: they might be sensitive info...
+*.raw
+
+# Ignore files contaning processed data
+*.xlsx
+*.json
+*.csv
