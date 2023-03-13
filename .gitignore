@@ -9,10 +9,13 @@
 __pycache__/
 *.pyc
 
+# Ignore compressed data files
+*.xz
+
 # Ignore the raw data files: they might be sensitive info...
 *.raw
 
-# Ignore files contaning processed data
+# Ignore files containing processed data
 *.xlsx
 *.json
 *.csv
