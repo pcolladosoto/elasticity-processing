@@ -7,6 +7,10 @@ import sys, argparse, pathlib, json, io, openpyxl
 
 import pandas as pd
 
+import numpy as np
+
+from sklearn.linear_model import LinearRegression
+
 fieldMap = {
     "Tipo de ensayo": "experimentType",
     "Nombre del m\ufffdtodo": "methodName",
@@ -60,9 +64,11 @@ fieldMap = {
 
 def parseArgs():
     parser = argparse.ArgumentParser(description = "Elasticity data analyser.")
-    parser.add_argument("raw_data", help = "File with a probe's raw data.")
+    parser.add_argument("path", help = "File or directory containing raw data.")
     parser.add_argument("--separator", default = ';', help = "Raw data field separator.")
     parser.add_argument("--header-lines", type = int, default = 40, help = "Number of header lines.")
+    parser.add_argument("--json", action = "store_true", help = "Dump processed data into a global JSON file.")
+    parser.add_argument("--excel", action = "store_true", help = "Dump merged Excel files per probe.")
     return parser.parse_args()
 
 def removeQuotes(raw: str) -> str:
@@ -79,49 +85,57 @@ def parseHeaderLine(parsedData: dict[str, dict[str]], line: list[str]):
         # We've got some malformed lines coming from the machine...
         pass
     elif len(line) == 2:
-        parsedData[fieldMap[removeQuotes(line[0])]] = {"value": removeQuotes(line[1]), "unit": "none"}
+        parsedData[fieldMap.get(removeQuotes(line[0]), "errField")] = {"value": removeQuotes(line[1]), "unit": "none"}
     elif len(line) == 3:
-        parsedData[fieldMap[removeQuotes(line[0])]] = {"value": float(removeQuotes(line[1])), "unit": removeQuotes(line[2])}
+        parsedData[fieldMap.get(removeQuotes(line[0]), "errField")] = {"value": float(removeQuotes(line[1])), "unit": removeQuotes(line[2])}
     else:
         print(f"expected 1, 2 or 3 fields and got {len(line)}: {line}. Quitting...")
         sys.exit(-1)
 
 def dumpExcel(path: str, parsedData):
     chosenColNames = ["tensionMPa", "elongationN", "extensionMM", "loadN"]
-    df = pd.DataFrame(
-        [[parsedData["data"][colName][i] for colName in chosenColNames] for i in range(len(parsedData["data"][chosenColNames[0]]))],
-        columns = ["Tensión [MPa]", "Elongación [N]", "Extensión [mm]", "Carga [N]"]
-    )
+
     excelBuff = io.BytesIO()
-    df.to_excel(excelBuff, sheet_name = "Datos", index = False, startrow = 5, startcol = 0)
+    excelWriter = pd.ExcelWriter(excelBuff)
+
+    with pd.ExcelWriter(excelBuff) as writer:
+        for fName, processedData in parsedData:
+            df = pd.DataFrame(
+                [[processedData["data"][colName][i] for colName in chosenColNames] for i in range(len(processedData["data"][chosenColNames[0]]))],
+                columns = ["Tensión [MPa]", "Elongación [N]", "Extensión [mm]", "Carga [N]"]
+            )
+            df.to_excel(writer, sheet_name = fName, index = False, startrow = 5, startcol = 0)
+
     excelBuff.seek(0, io.SEEK_SET)
 
     wb = openpyxl.load_workbook(excelBuff)
-    ws = wb.active
+    for fName, processedData in parsedData:
+        ws = wb[fName]
 
-    ws["A1"] = "Máximos:"
-    ws["A2"] = "Tensión Máxima [MPa]:"
-    ws["B2"] = parsedData["data"]["maxTensionMPa"]
-    ws["A3"] = "Elongación Máxima [N]:"
-    ws["B3"] = parsedData["data"]["maxElongationN"]
-    ws["A4"] = "Ductilidad [%]:"
-    ws["B4"] = parsedData["data"]["ductility"]
+        ws["A1"] = "Máximos:"
+        ws["A2"] = "Tensión Máxima [MPa]:"
+        ws["B2"] = processedData["data"]["maxTensionMPa"]
+        ws["A3"] = "Elongación Máxima [N]:"
+        ws["B3"] = processedData["data"]["maxElongationN"]
+        ws["A4"] = "Ductilidad [%]:"
+        ws["B4"] = processedData["data"]["ductility"]
 
     excelBuff.seek(0, io.SEEK_SET)
     pathlib.Path(path).write_bytes(openpyxl.writer.excel.save_virtual_workbook(wb))
 
-def main():
-    args = parseArgs()
+def parseRawData(file: pathlib.Path, separator: str, headerLines: int) -> dict:
+    print(f"Parsing file: {file.name}", file = sys.stderr)
     parsedData = {"data": {"tensionMPa": [], "elongationN": []}}
+    for i, line in enumerate(file.read_text(encoding = "utf-8", errors = "replace").splitlines()):
+        # print(f"Parsing line: {line}", file = sys.stderr)
 
-    for i, line in enumerate(pathlib.Path(args.raw_data).read_text(encoding = "utf-8", errors = "replace").splitlines()):
-        sLine = line.split(args.separator)
+        sLine = line.split(separator)
 
-        if i < args.header_lines:
+        if i < headerLines:
             parseHeaderLine(parsedData, sLine)
 
-        elif i == args.header_lines:
-            colNames = [fieldMap[removeQuotes(field)] for field in sLine]
+        elif i == headerLines:
+            colNames = [fieldMap.get(removeQuotes(field), "extensionMM") for field in sLine]
             for colName in colNames:
                 parsedData["data"][colName] = []
 
@@ -135,8 +149,54 @@ def main():
     parsedData["data"]["maxElongationN"] = max(parsedData["data"]["elongationN"])
     parsedData["data"]["ductility"] = (float(parsedData["finalLength"]["value"]) - 60) / 60
 
-    dumpExcel(f"{args.raw_data.split('.')[0].split('/')[-1]}.xlsx", parsedData)
-    pathlib.Path(f"{args.raw_data.split('.')[0].split('/')[-1]}.json").write_text(json.dumps(parsedData, indent = 2, ensure_ascii = False))
+    return parsedData
+
+def main():
+    args = parseArgs()
+
+    if args.path == "young":
+        try:
+            parsedFiles = json.loads(pathlib.Path("processed_data.json").read_text())
+        except FileNotFoundError:
+            print("couldn't find ./processed_data.json: remember to process the data beforehand")
+            return -1
+
+        for probe, fullData in parsedFiles.items():
+            print(f"Processing probe {probe}", file = sys.stderr)
+
+            # More info over at https://realpython.com/linear-regression-in-python/
+            for experiment, data in fullData:
+                print(f"Processing experiment {experiment}", file = sys.stderr)
+                fitPoints = int(len(data["data"]["elongationN"]) / 2)
+                elongationX = np.array(data["data"]["elongationN"][:fitPoints]).reshape((-1, 1))
+                tensionY = np.array(data["data"]["tensionMPa"][:fitPoints])
+                model = LinearRegression(fit_intercept = False).fit(elongationX, tensionY)
+                print(f"Fit score (best is 1): {model.score(elongationX, tensionY)}", file = sys.stderr)
+                print(f"Intercept = {model.intercept_}; slope = {model.coef_}", file = sys.stderr)
+
+                sys.exit(-1)
+
+    if pathlib.Path(args.path).is_dir():
+        parsedFiles = {}
+        for file in pathlib.Path(args.path).iterdir():
+            if file.name.split('.')[1] != "raw":
+                continue
+
+            fileRoot = file.name.split('-')[0]
+            if not parsedFiles.get(fileRoot, False):
+                parsedFiles[fileRoot] = []
+
+            parsedFiles[fileRoot].append([file.name, parseRawData(file, args.separator, args.header_lines)])
+
+        if args.json:
+            print("Dumping parsed data to a JSON file...", file = sys.stderr)
+            pathlib.Path("processed_data.json").write_text(json.dumps(parsedFiles, indent = 2))
+
+        if args.excel:
+            for probe, data in parsedFiles.items():
+                print(f"Merging data for probe {probe}", file = sys.stderr)
+                dumpExcel(f"./excels/{probe}.xlsx", data)
+        return 0
 
 if __name__ == "__main__":
     main()
