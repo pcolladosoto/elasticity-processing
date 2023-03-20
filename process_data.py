@@ -104,7 +104,7 @@ def dumpExcel(path: str, parsedData):
                 [[processedData["data"][colName][i] for colName in chosenColNames] for i in range(len(processedData["data"][chosenColNames[0]]))],
                 columns = ["Tensión [MPa]", "Elongación [N]", "Extensión [mm]", "Carga [N]"]
             )
-            df.to_excel(writer, sheet_name = fName, index = False, startrow = 5, startcol = 0)
+            df.to_excel(writer, sheet_name = fName, index = False, startrow = 8, startcol = 0)
 
     excelBuff.seek(0, io.SEEK_SET)
 
@@ -119,6 +119,8 @@ def dumpExcel(path: str, parsedData):
         ws["B3"] = processedData["data"]["maxElongationN"]
         ws["A4"] = "Ductilidad [%]:"
         ws["B4"] = processedData["data"]["ductility"]
+        ws["A5"] = "Longitud final [mm]:"
+        ws["B5"] = processedData["finalLength"]["value"]
 
     excelBuff.seek(0, io.SEEK_SET)
     pathlib.Path(path).write_bytes(openpyxl.writer.excel.save_virtual_workbook(wb))
@@ -151,6 +153,44 @@ def parseRawData(file: pathlib.Path, separator: str, headerLines: int) -> dict:
 
     return parsedData
 
+def findYoung(probe, fullData):
+    fitData = []
+    for experimentName, data in fullData:
+        # print(f"Processing experiment {experiment}", file = sys.stderr)
+        fitPoints = int(len(data["data"]["elongationN"]) / 2)
+        elongationX = np.array(data["data"]["elongationN"][:fitPoints]).reshape((-1, 1))
+        tensionY = np.array(data["data"]["tensionMPa"][:fitPoints])
+        model = LinearRegression(fit_intercept = False).fit(elongationX, tensionY)
+        # print(f"Fit score (best is 1): {model.score(elongationX, tensionY)}", file = sys.stderr)
+        # print(f"Intercept = {model.intercept_}; slope = {model.coef_}", file = sys.stderr)
+        fitData.append((experimentName, model.coef_[0], model.score(elongationX, tensionY)))
+    return fitData
+
+def addYoungInfoToExcel(path: str, fitData):
+    wb = openpyxl.load_workbook(filename = path)
+    for expName, slope, score in fitData:
+        ws = wb[expName]
+        ws["A6"] = "E / Score (1 is best):"
+        ws["B6"] = slope
+        ws["C6"] = score
+
+    wb.save(path)
+
+def joinExcels(path: str):
+    joinedExcels = pd.ExcelWriter("joinedProbes.xlsx")
+
+    for file in pathlib.Path(path).iterdir():
+        print(f"Mergeing Excel file {file.absolute()}...")
+        currExcel = pd.ExcelFile(file.absolute())
+
+        # Returns all the sheets as dataframes!
+        dfs = pd.read_excel(currExcel, None)
+
+        for sheetName, sheetDf in dfs.items():
+            sheetDf.to_excel(joinedExcels, sheet_name = sheetName, startrow = 0, startcol = 0)
+
+    joinedExcels.close()
+
 def main():
     args = parseArgs()
 
@@ -175,6 +215,25 @@ def main():
                 print(f"Intercept = {model.intercept_}; slope = {model.coef_}", file = sys.stderr)
 
                 sys.exit(-1)
+
+    if args.path == "addYoung":
+        parsedFiles = json.loads(pathlib.Path("processed_data.json").read_text())
+
+        for probe, fullData in parsedFiles.items():
+            print(f"Adding young data for probe {probe}...")
+            addYoungInfoToExcel(f"./excels/{probe}.xlsx", findYoung(probe, fullData))
+
+        return 0
+
+    if args.path == "mergeExcels":
+        joinExcels("./excels")
+
+    if args.excel:
+        parsedFiles = json.loads(pathlib.Path("processed_data.json").read_text())
+        for probe, data in parsedFiles.items():
+            print(f"Merging data for probe {probe}", file = sys.stderr)
+            dumpExcel(f"./excels/{probe}.xlsx", data)
+        return 0
 
     if pathlib.Path(args.path).is_dir():
         parsedFiles = {}
