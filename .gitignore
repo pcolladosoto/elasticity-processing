@@ -19,3 +19,7 @@ __pycache__/
 *.xlsx
 *.json
 *.csv
+
+# Ignore plots and images
+*.png
+plots/
