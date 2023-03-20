@@ -6,8 +6,8 @@ warnings.simplefilter("ignore", DeprecationWarning)
 import sys, argparse, pathlib, json, io, openpyxl
 
 import pandas as pd
-
 import numpy as np
+import matplotlib.pyplot as plt
 
 from sklearn.linear_model import LinearRegression
 
@@ -65,10 +65,18 @@ fieldMap = {
 def parseArgs():
     parser = argparse.ArgumentParser(description = "Elasticity data analyser.")
     parser.add_argument("path", help = "File or directory containing raw data.")
+    parser.add_argument("--output", default = 'processed_data.json', help = "JSON file to output processed data to.")
+    parser.add_argument("--input", default = 'processed_data.json', help = "JSON file to read processed data from.")
     parser.add_argument("--separator", default = ';', help = "Raw data field separator.")
+    parser.add_argument("--excel-dir", default = './excels', help = "Directory on which to dump generated Excels.")
     parser.add_argument("--header-lines", type = int, default = 40, help = "Number of header lines.")
-    parser.add_argument("--json", action = "store_true", help = "Dump processed data into a global JSON file.")
-    parser.add_argument("--excel", action = "store_true", help = "Dump merged Excel files per probe.")
+    parser.add_argument("--excel", action = "store_true", help = "Dump summarised Excel files per probe.")
+    parser.add_argument("--merge-excels", action = "store_true", help = "Merge existing Excels on `--excel-dir` into a big one.")
+    parser.add_argument("--summarised-excel", action = "store_true", help = "Generate a one-sheet summary Excel.")
+    parser.add_argument("--output-excel-summary", default = "ProbeSummary.xlsx", help = "File to dump probe data summary to.")
+    parser.add_argument("--plots", action = "store_true", help = "Generate plots.")
+    parser.add_argument("--plot-dir", default = "./plots", help = "Directory to store plots to.")
+
     return parser.parse_args()
 
 def removeQuotes(raw: str) -> str:
@@ -121,12 +129,15 @@ def dumpExcel(path: str, parsedData):
         ws["B4"] = processedData["data"]["ductility"]
         ws["A5"] = "Longitud final [mm]:"
         ws["B5"] = processedData["finalLength"]["value"]
+        ws["A6"] = "E / Score (1 is best):"
+        ws["B6"] = processedData["youngModule"]["E"]
+        ws["C6"] = processedData["youngModule"]["score"]
 
     excelBuff.seek(0, io.SEEK_SET)
     pathlib.Path(path).write_bytes(openpyxl.writer.excel.save_virtual_workbook(wb))
 
 def parseRawData(file: pathlib.Path, separator: str, headerLines: int) -> dict:
-    print(f"Parsing file: {file.name}", file = sys.stderr)
+    print(f"Parsing file: {file.name}...", file = sys.stderr)
     parsedData = {"data": {"tensionMPa": [], "elongationN": []}}
     for i, line in enumerate(file.read_text(encoding = "utf-8", errors = "replace").splitlines()):
         # print(f"Parsing line: {line}", file = sys.stderr)
@@ -147,34 +158,28 @@ def parseRawData(file: pathlib.Path, separator: str, headerLines: int) -> dict:
             parsedData["data"]["tensionMPa"].append(parsedData["data"]["loadN"][-1] / 40)
             parsedData["data"]["elongationN"].append(parsedData["data"]["extensionMM"][-1] / 60)
 
-    parsedData["data"]["maxTensionMPa"] = max(parsedData["data"]["tensionMPa"])
-    parsedData["data"]["maxElongationN"] = max(parsedData["data"]["elongationN"])
-    parsedData["data"]["ductility"] = (float(parsedData["finalLength"]["value"]) - 60) / 60
+    parsedData["maxTensionMPa"] = max(parsedData["data"]["tensionMPa"])
+    parsedData["maxElongationN"] = max(parsedData["data"]["elongationN"])
+    parsedData["ductility"] = (float(parsedData["finalLength"]["value"]) - 60) / 60
+
+    parsedData["youngModule"] = findYoung(parsedData["data"]["elongationN"], parsedData["data"]["tensionMPa"])
 
     return parsedData
 
-def findYoung(probe, fullData):
-    fitData = []
-    for experimentName, data in fullData:
-        # print(f"Processing experiment {experiment}", file = sys.stderr)
-        fitPoints = int(len(data["data"]["elongationN"]) / 2)
-        elongationX = np.array(data["data"]["elongationN"][:fitPoints]).reshape((-1, 1))
-        tensionY = np.array(data["data"]["tensionMPa"][:fitPoints])
-        model = LinearRegression(fit_intercept = False).fit(elongationX, tensionY)
-        # print(f"Fit score (best is 1): {model.score(elongationX, tensionY)}", file = sys.stderr)
-        # print(f"Intercept = {model.intercept_}; slope = {model.coef_}", file = sys.stderr)
-        fitData.append((experimentName, model.coef_[0], model.score(elongationX, tensionY)))
-    return fitData
+def findYoung(elongation: list[float], tension: list[float]) -> dict:
+    # Number of samples to take into account for the linear regression
+    fitPoints = int(len(elongation) / 2)
 
-def addYoungInfoToExcel(path: str, fitData):
-    wb = openpyxl.load_workbook(filename = path)
-    for expName, slope, score in fitData:
-        ws = wb[expName]
-        ws["A6"] = "E / Score (1 is best):"
-        ws["B6"] = slope
-        ws["C6"] = score
+    # Converting the vectors into NumPy arrays...
+    elongationX = np.array(elongation[:fitPoints]).reshape((-1, 1))
+    tensionY = np.array(tension[:fitPoints])
 
-    wb.save(path)
+    # Time to fit the data!
+
+    # Returning the results. Bear in mind the `fit_intercept` kwarg implies
+    # we take the intercept with the Y axis to be 0.
+    model = LinearRegression(fit_intercept = False).fit(elongationX, tensionY)
+    return {"E": model.coef_[0], "score": model.score(elongationX, tensionY)}
 
 def joinExcels(path: str):
     joinedExcels = pd.ExcelWriter("joinedProbes.xlsx")
@@ -191,48 +196,83 @@ def joinExcels(path: str):
 
     joinedExcels.close()
 
+def summarisedExcel(summaryExcelName: str, processedData: dict):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Summarised Data"
+
+    ws.cell(row = 1, column = 1, value = "Probe Name")
+    ws.cell(row = 1, column = 2, value = "Experiment Name")
+    ws.cell(row = 1, column = 3, value = "Max. Tension [MPa]")
+    ws.cell(row = 1, column = 4, value = "Max. Elongation [N]")
+    ws.cell(row = 1, column = 5, value = "Ductility [%A]")
+    ws.cell(row = 1, column = 6, value = "Final Length [mm]")
+    ws.cell(row = 1, column = 7, value = "E")
+    ws.cell(row = 1, column = 8, value = "E Fit Score")
+
+    currRow = 2
+    for probeName, probeData in processedData.items():
+        print(f"Summarising data for probe {probeName}...", file = sys.stderr)
+        for experimentName, experimentData in probeData.items():
+            ws.cell(row = currRow, column = 1, value = probeName)
+            ws.cell(row = currRow, column = 2, value = experimentName)
+            ws.cell(row = currRow, column = 3, value = experimentData["maxTensionMPa"])
+            ws.cell(row = currRow, column = 4, value = experimentData["maxElongationN"])
+            ws.cell(row = currRow, column = 5, value = experimentData["ductility"])
+            ws.cell(row = currRow, column = 6, value = experimentData["finalLength"]["value"])
+            ws.cell(row = currRow, column = 7, value = experimentData["youngModule"]["E"])
+            ws.cell(row = currRow, column = 8, value = experimentData["youngModule"]["score"])
+            currRow += 1
+
+    wb.save(summaryExcelName)
+
+def genPlot(plotDir: str, expName: str, elongation: list[float], tension: list[float]):
+    plt.figure(figsize = (5, 2.7), layout = "constrained")
+    plt.xlabel("Elongation [N]")
+    plt.ylabel("Tension [MPa]")
+    plt.title(expName)
+    plt.plot(elongation, tension, "go")
+    plt.savefig(f"{plotDir}/{expName}.png", bbox_inches = "tight")
+    plt.close()
+
 def main():
     args = parseArgs()
 
-    if args.path == "young":
+    if args.summarised_excel:
         try:
-            parsedFiles = json.loads(pathlib.Path("processed_data.json").read_text())
+            parsedFiles = json.loads(pathlib.Path(args.input).read_text())
         except FileNotFoundError:
-            print("couldn't find ./processed_data.json: remember to process the data beforehand")
+            print(f"Couldn't load {args.input}. Have you processed the data?", file = sys.stderr)
             return -1
+        summarisedExcel(args.output_excel_summary, parsedFiles)
 
-        for probe, fullData in parsedFiles.items():
-            print(f"Processing probe {probe}", file = sys.stderr)
-
-            # More info over at https://realpython.com/linear-regression-in-python/
-            for experiment, data in fullData:
-                print(f"Processing experiment {experiment}", file = sys.stderr)
-                fitPoints = int(len(data["data"]["elongationN"]) / 2)
-                elongationX = np.array(data["data"]["elongationN"][:fitPoints]).reshape((-1, 1))
-                tensionY = np.array(data["data"]["tensionMPa"][:fitPoints])
-                model = LinearRegression(fit_intercept = False).fit(elongationX, tensionY)
-                print(f"Fit score (best is 1): {model.score(elongationX, tensionY)}", file = sys.stderr)
-                print(f"Intercept = {model.intercept_}; slope = {model.coef_}", file = sys.stderr)
-
-                sys.exit(-1)
-
-    if args.path == "addYoung":
-        parsedFiles = json.loads(pathlib.Path("processed_data.json").read_text())
-
-        for probe, fullData in parsedFiles.items():
-            print(f"Adding young data for probe {probe}...")
-            addYoungInfoToExcel(f"./excels/{probe}.xlsx", findYoung(probe, fullData))
-
+    if args.merge_excels:
+        joinExcels(args.excel_dir)
         return 0
 
-    if args.path == "mergeExcels":
-        joinExcels("./excels")
-
     if args.excel:
-        parsedFiles = json.loads(pathlib.Path("processed_data.json").read_text())
+        try:
+            parsedFiles = json.loads(pathlib.Path(args.input).read_text())
+        except FileNotFoundError:
+            print(f"Couldn't load {args.input}. Have you processed the data?", file = sys.stderr)
+            return -1
+
         for probe, data in parsedFiles.items():
-            print(f"Merging data for probe {probe}", file = sys.stderr)
-            dumpExcel(f"./excels/{probe}.xlsx", data)
+            print(f"Dumping Excel for probe {probe}", file = sys.stderr)
+            dumpExcel(f"./{args.excel_dir}/{probe}.xlsx", data)
+        return 0
+
+    if args.plots:
+        try:
+            parsedFiles = json.loads(pathlib.Path(args.input).read_text())
+        except FileNotFoundError:
+            print(f"Couldn't load {args.input}. Have you processed the data?", file = sys.stderr)
+            return -1
+
+        for probeName, probeData in parsedFiles.items():
+            print(f"Generating plots for probe {probeName}...", file = sys.stderr)
+            for experimentName, experimentData in probeData.items():
+                genPlot(args.plot_dir, experimentName.split(".")[0], experimentData["data"]["elongationN"], experimentData["data"]["tensionMPa"])
         return 0
 
     if pathlib.Path(args.path).is_dir():
@@ -243,18 +283,13 @@ def main():
 
             fileRoot = file.name.split('-')[0]
             if not parsedFiles.get(fileRoot, False):
-                parsedFiles[fileRoot] = []
+                parsedFiles[fileRoot] = {}
 
-            parsedFiles[fileRoot].append([file.name, parseRawData(file, args.separator, args.header_lines)])
+            parsedFiles[fileRoot][file.name] = parseRawData(file, args.separator, args.header_lines)
 
-        if args.json:
-            print("Dumping parsed data to a JSON file...", file = sys.stderr)
-            pathlib.Path("processed_data.json").write_text(json.dumps(parsedFiles, indent = 2))
+        print("Dumping parsed data to a JSON file...", file = sys.stderr)
+        pathlib.Path(args.output).write_text(json.dumps(parsedFiles, indent = 2))
 
-        if args.excel:
-            for probe, data in parsedFiles.items():
-                print(f"Merging data for probe {probe}", file = sys.stderr)
-                dumpExcel(f"./excels/{probe}.xlsx", data)
         return 0
 
 if __name__ == "__main__":
