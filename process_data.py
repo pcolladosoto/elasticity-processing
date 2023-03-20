@@ -227,12 +227,26 @@ def summarisedExcel(summaryExcelName: str, processedData: dict):
     wb.save(summaryExcelName)
 
 def genPlot(plotDir: str, expName: str, elongation: list[float], tension: list[float]):
-    plt.figure(figsize = (5, 2.7), layout = "constrained")
+    plt.figure(layout = "constrained")
     plt.xlabel("Elongation [N]")
     plt.ylabel("Tension [MPa]")
     plt.title(expName)
-    plt.plot(elongation, tension, "go")
+    plt.plot(elongation, tension, "g")
     plt.savefig(f"{plotDir}/{expName}.png", bbox_inches = "tight")
+    plt.close()
+
+def genAggregatedPlot(plotDir: str, probeName: str, probeData: dict):
+    plt.figure(figsize = (25, 12.5), layout = "constrained")
+    plt.xlabel("Elongation [N]")
+    plt.ylabel("Tension [MPa]")
+    plt.title(probeName)
+
+    for experimentName, experimentData in probeData.items():
+        plt.plot(experimentData["data"]["elongationN"],
+            experimentData["data"]["tensionMPa"], label = experimentName.split(".")[0])
+
+    plt.legend()
+    plt.savefig(f"{plotDir}/agg{probeName}.png", bbox_inches = "tight")
     plt.close()
 
 def main():
@@ -271,6 +285,7 @@ def main():
 
         for probeName, probeData in parsedFiles.items():
             print(f"Generating plots for probe {probeName}...", file = sys.stderr)
+            genAggregatedPlot(args.plot_dir, probeName, probeData)
             for experimentName, experimentData in probeData.items():
                 genPlot(args.plot_dir, experimentName.split(".")[0], experimentData["data"]["elongationN"], experimentData["data"]["tensionMPa"])
         return 0
