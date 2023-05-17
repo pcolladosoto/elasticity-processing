@@ -49,3 +49,13 @@ We can use `gnuplot` to plot the two columns we exported just now:
 	plot "tensionElongation.csv" using 1:2 with lines t "Prob14"
 
 Like before, variations of the above can become quite useful too!
+
+## Useful stuff
+When doing all this we ran into some statistics we had never worked with before...
+The following is a list of some of the links we found useful when working with the
+Shapiro-Wilk test:
+
+- The main WikiPedia entry: https://en.wikipedia.org/wiki/Shapiro–Wilk_test
+- The Null hypothesis: https://en.wikipedia.org/wiki/Null_hypothesis
+- What's a *p-value*?: https://en.wikipedia.org/wiki/P-value
+- Scipy's `stats.shapiro()` doc: https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.shapiro.html
