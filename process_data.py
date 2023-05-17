@@ -90,7 +90,9 @@ def parseArgs():
     parser.add_argument("--output-json-summary", default = "summarised_probes.json", help = "JSON file to dump probe data summary to.")
 
     parser.add_argument("--shapiro", action = "store_true", help = "Pass the Shapiro-Wilk test on the summarised data.")
-    parser.add_argument("--shapiro-name", default = "ShapiroProbes.xlsx", help = "Excel file to dump the Shapiro-Wilk test results to.")
+    parser.add_argument("--shapiro-output", default = "ShapiroProbes.xlsx", help = "Excel file to dump the Shapiro-Wilk test results to.")
+
+    parser.add_argument("--shore", action = "store_true", help = "Pass the Shapiro-Wilk test on the Shore hardness data.")
 
     parser.add_argument("--plots", action = "store_true", help = "Generate plots.")
     parser.add_argument("--plot-dir", default = "./plots", help = "Directory to store plots to.")
@@ -306,6 +308,33 @@ def summarisedExcel(summaryExcelName: str, processedData: dict):
 
     wb.save(summaryExcelName)
 
+def shoreShapiro():
+    try:
+        # Note we need to manually inspect the Excel file to find the indices!
+        shoreHardnessDf = pd.read_excel("durezaShoreD.xlsx").iloc[2:67, 2:22]
+    except FileNotFoundError:
+        print(f"Couldn't load {shoreHardnessFile}...", file = sys.stderr)
+        return
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Shapiro-Wilk Test Results"
+
+    ws.cell(row = 1, column = 1, value = "Row index")
+    ws.cell(row = 1, column = 2, value = "Statistic (W)")
+    ws.cell(row = 1, column = 3, value = "p-value")
+
+    for i in range(len(shoreHardnessDf)):
+        print(f"Working on data for row {i}...", file = sys.stderr)
+
+        ws.cell(row = i + 2, column = 1, value = i + 1)
+
+        shapiroRow = stats.shapiro(np.array(shoreHardnessDf.iloc[i]))
+        ws.cell(row = i + 2, column = 2, value = shapiroRow.statistic)
+        ws.cell(row = i + 2, column = 3, value = shapiroRow.pvalue)
+
+    wb.save("durezaShoreShapiro.xlsx")
+
 def genPlot(plotDir: str, expName: str, elongation: list[float], tension: list[float]):
     plt.figure(layout = "constrained")
     plt.xlabel("Elongation [N]")
@@ -356,6 +385,9 @@ def main():
                   "\tpython3 process_data.py --summarised-json foo", file = sys.stderr)
             return -1
         shapiroWilkTest(args.shapiro_name, summarisedData)
+
+    if args.shore:
+        shoreShapiro()
 
     if args.merge_excels:
         joinExcels(args.excel_dir)
