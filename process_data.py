@@ -11,6 +11,8 @@ import matplotlib.pyplot as plt
 
 from sklearn.linear_model import LinearRegression
 
+from scipy import stats
+
 fieldMap = {
     "Tipo de ensayo": "experimentType",
     "Nombre del m\ufffdtodo": "methodName",
@@ -65,15 +67,31 @@ fieldMap = {
 def parseArgs():
     parser = argparse.ArgumentParser(description = "Elasticity data analyser.")
     parser.add_argument("path", help = "File or directory containing raw data.")
+
     parser.add_argument("--output", default = 'processed_data.json', help = "JSON file to output processed data to.")
+
     parser.add_argument("--input", default = 'processed_data.json', help = "JSON file to read processed data from.")
+    parser.add_argument("--summary", default = 'summarised_probes.json', help = "JSON file to read summarised data from.")
+
     parser.add_argument("--separator", default = ';', help = "Raw data field separator.")
+
     parser.add_argument("--excel-dir", default = './excels', help = "Directory on which to dump generated Excels.")
+
     parser.add_argument("--header-lines", type = int, default = 40, help = "Number of header lines.")
+
     parser.add_argument("--excel", action = "store_true", help = "Dump summarised Excel files per probe.")
+
     parser.add_argument("--merge-excels", action = "store_true", help = "Merge existing Excels on `--excel-dir` into a big one.")
+
     parser.add_argument("--summarised-excel", action = "store_true", help = "Generate a one-sheet summary Excel.")
-    parser.add_argument("--output-excel-summary", default = "ProbeSummary.xlsx", help = "File to dump probe data summary to.")
+    parser.add_argument("--output-excel-summary", default = "ProbeSummary.xlsx", help = "Excel file to dump probe data summary to.")
+
+    parser.add_argument("--summarised-json", action = "store_true", help = "Generate a JSON file with the aggregated statistics.")
+    parser.add_argument("--output-json-summary", default = "summarised_probes.json", help = "JSON file to dump probe data summary to.")
+
+    parser.add_argument("--shapiro", action = "store_true", help = "Pass the Shapiro-Wilk test on the summarised data.")
+    parser.add_argument("--shapiro-name", default = "ShapiroProbes.xlsx", help = "Excel file to dump the Shapiro-Wilk test results to.")
+
     parser.add_argument("--plots", action = "store_true", help = "Generate plots.")
     parser.add_argument("--plot-dir", default = "./plots", help = "Directory to store plots to.")
 
@@ -196,6 +214,68 @@ def joinExcels(path: str):
 
     joinedExcels.close()
 
+def summarisedJSON(summaryJSONName: str, processedData: dict):
+    summary = {}
+
+    for probeName, probeData in processedData.items():
+        print(f"Summarising data for probe {probeName}...", file = sys.stderr)
+        summary[probeName] = []
+
+        for experimentName, experimentData in probeData.items():
+            summary[probeName].append({
+                "name": experimentName,
+                "maxTensionMPa": experimentData["maxTensionMPa"],
+                "maxElongationN": experimentData["maxElongationN"],
+                "ductility": experimentData["ductility"],
+                "finalLength": experimentData["finalLength"]["value"],
+                "youngModuleE": experimentData["youngModule"]["E"],
+                "youngModuleScore": experimentData["youngModule"]["score"]
+            })
+
+    pathlib.Path(summaryJSONName).write_text(json.dumps(summary, indent = 4))
+
+def shapiroWilkTest(resultExcelName: str, summarisedData: dict):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Shapiro-Wilk Test Results"
+
+    ws.cell(row = 1, column = 1, value = "Probe Name")
+    ws.cell(row = 1, column = 2, value = "Sample Type")
+    ws.cell(row = 1, column = 3, value = "Statistic (W)")
+    ws.cell(row = 1, column = 4, value = "p-value")
+
+    currRow = 2
+    for probeName, probeData in summarisedData.items():
+        print(f"Working on data for probe {probeName}...", file = sys.stderr)
+
+        # Skip running the test on probes with less than 3 measurements: it's nonsense!
+        if len(probeData) < 3:
+            continue
+
+        ws.cell(row = currRow, column = 1, value = probeName)
+
+        shapiroMaxTensions = stats.shapiro(np.array([experiment["maxTensionMPa"] for experiment in probeData]))
+        ws.cell(row = currRow, column = 2, value = "Tension [MPa]")
+        ws.cell(row = currRow, column = 3, value = shapiroMaxTensions.statistic)
+        ws.cell(row = currRow, column = 4, value = shapiroMaxTensions.pvalue)
+        currRow += 1
+
+        shapiroMaxElongations = stats.shapiro(np.array([experiment["maxElongationN"] for experiment in probeData]))
+        ws.cell(row = currRow, column = 2, value = "Elongation [N]")
+        ws.cell(row = currRow, column = 3, value = shapiroMaxElongations.statistic)
+        ws.cell(row = currRow, column = 4, value = shapiroMaxElongations.pvalue)
+        currRow += 1
+
+
+
+        shapiroYoungs = stats.shapiro(np.array([experiment["youngModuleE"] for experiment in probeData]))
+        ws.cell(row = currRow, column = 2, value = "E")
+        ws.cell(row = currRow, column = 3, value = shapiroYoungs.statistic)
+        ws.cell(row = currRow, column = 4, value = shapiroYoungs.pvalue)
+        currRow += 1
+
+    wb.save(resultExcelName)
+
 def summarisedExcel(summaryExcelName: str, processedData: dict):
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -259,6 +339,23 @@ def main():
             print(f"Couldn't load {args.input}. Have you processed the data?", file = sys.stderr)
             return -1
         summarisedExcel(args.output_excel_summary, parsedFiles)
+
+    if args.summarised_json:
+        try:
+            parsedFiles = json.loads(pathlib.Path(args.input).read_text())
+        except FileNotFoundError:
+            print(f"Couldn't load {args.input}. Have you processed the data?", file = sys.stderr)
+            return -1
+        summarisedJSON(args.output_json_summary, parsedFiles)
+
+    if args.shapiro:
+        try:
+            summarisedData = json.loads(pathlib.Path(args.summary).read_text())
+        except FileNotFoundError:
+            print(f"Couldn't load {args.summary}. Have you summarised the data? You can use:\n" +
+                  "\tpython3 process_data.py --summarised-json foo", file = sys.stderr)
+            return -1
+        shapiroWilkTest(args.shapiro_name, summarisedData)
 
     if args.merge_excels:
         joinExcels(args.excel_dir)
