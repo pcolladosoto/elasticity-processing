@@ -95,6 +95,7 @@ def parseArgs():
     parser.add_argument("--shore", action = "store_true", help = "Pass the Shapiro-Wilk test on the Shore hardness data.")
 
     parser.add_argument("--plots", action = "store_true", help = "Generate plots.")
+    parser.add_argument("--plots-custom", action = "store_true", help = "Generate custom plots.")
     parser.add_argument("--plot-dir", default = "./plots", help = "Directory to store plots to.")
 
     return parser.parse_args()
@@ -250,6 +251,11 @@ def shapiroWilkTest(resultExcelName: str, summarisedData: dict):
     for probeName, probeData in summarisedData.items():
         print(f"Working on data for probe {probeName}...", file = sys.stderr)
 
+        try:
+            probeData = [experiment for experiment in probeData if experiment["name"].split('.')[0].split('-')[1] not in ['9', '10']]
+        except IndexError:
+            print("Skipping decimation of non-standard probe", file = sys.stderr)
+
         # Skip running the test on probes with less than 3 measurements: it's nonsense!
         if len(probeData) < 3:
             continue
@@ -267,8 +273,6 @@ def shapiroWilkTest(resultExcelName: str, summarisedData: dict):
         ws.cell(row = currRow, column = 3, value = shapiroMaxElongations.statistic)
         ws.cell(row = currRow, column = 4, value = shapiroMaxElongations.pvalue)
         currRow += 1
-
-
 
         shapiroYoungs = stats.shapiro(np.array([experiment["youngModuleE"] for experiment in probeData]))
         ws.cell(row = currRow, column = 2, value = "E")
@@ -358,6 +362,29 @@ def genAggregatedPlot(plotDir: str, probeName: str, probeData: dict):
     plt.savefig(f"{plotDir}/agg{probeName}.png", bbox_inches = "tight")
     plt.close()
 
+def genCustomPlot(plotDir: str, parsedFiles: dict):
+    for name in ["Prob2Gris.raw", "Prob10Tenaflex.raw", "Prob7.raw", "Prob1AmarilloCanario.raw"]:
+        print(f"Probe {name}:")
+        for experimentName, experimentData in parsedFiles[name].items():
+            print(f"\t{len(experimentData['data']['elongationN'])}\t{len(experimentData['data']['tensionMPa'])}")
+
+    # return
+
+    plt.figure(figsize = (25, 12.5), layout = "constrained")
+    plt.xlabel("Elongation [log(N)]")
+    plt.ylabel("Tension [MPa]")
+    plt.title("Prob2Gris, Prob10Tenaflex, Prob7 y Prob1AmarilloCanario")
+    plt.xscale("log")
+
+    for name in ["Prob2Gris.raw", "Prob10Tenaflex.raw", "Prob7.raw", "Prob1AmarilloCanario.raw"]:
+        for experimentName, experimentData in parsedFiles[name].items():
+            plt.plot(experimentData["data"]["elongationN"],
+                experimentData["data"]["tensionMPa"], label = name)
+
+    plt.legend()
+    plt.savefig(f"{plotDir}/customGraph.png", bbox_inches = "tight")
+    plt.close()
+
 def main():
     args = parseArgs()
 
@@ -384,7 +411,7 @@ def main():
             print(f"Couldn't load {args.summary}. Have you summarised the data? You can use:\n" +
                   "\tpython3 process_data.py --summarised-json foo", file = sys.stderr)
             return -1
-        shapiroWilkTest(args.shapiro_name, summarisedData)
+        shapiroWilkTest(args.shapiro_output, summarisedData)
 
     if args.shore:
         shoreShapiro()
@@ -418,6 +445,17 @@ def main():
             for experimentName, experimentData in probeData.items():
                 genPlot(args.plot_dir, experimentName.split(".")[0], experimentData["data"]["elongationN"], experimentData["data"]["tensionMPa"])
         return 0
+
+    if args.plots_custom:
+        try:
+            parsedFiles = json.loads(pathlib.Path(args.input).read_text())
+        except FileNotFoundError:
+            print(f"Couldn't load {args.input}. Have you processed the data?", file = sys.stderr)
+            return -1
+
+        # print(json.dumps(list(parsedFiles.keys()), indent = 2))
+
+        genCustomPlot(args.plot_dir, parsedFiles)
 
     if pathlib.Path(args.path).is_dir():
         parsedFiles = {}
